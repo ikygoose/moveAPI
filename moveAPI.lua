@@ -20,33 +20,64 @@ DOWN = 11
 FORWARD = 12
 BACK = 13
 
---- orientation constants
+--- axis constants
 X = 1
 Y = 2
 Z = 3
-DIRECTION = 4
-
 
 --- private turtle data
 local data = {
-    orientation = {0, 0, 0, NORTH},
+    orientation = {
+        x = 0,
+        y = 0,
+        z = 0,
+        direction = NORTH
+    },
     refuelSlot = 1,
     refuelAmount = 1,
 }
 
+--- allow somewhat controlled access to the movement data
+function getOrientation()
+    return data.orientation
+end
+
+function getRefuelSlot()
+    return data.refuelSlot
+end
+
+function getRefuelAmount()
+    return data.refuelAmount
+end
+
+function setOrientation( orientation )
+    data.orientation = orientation
+end
+
+function setRefuelSlot( slot )
+    data.refuelSlot = slot
+end
+
+function setRefuelAmount( amount )
+    data.refuelAmount = amount
+end
+
 --- turns the turtle to a given relative or absolute direction
-function turn( direction )
+--- saveCallBack is called after finishing a full turn
+function turn( direction, saveCallBack )
+    saveCallBack = saveCallBack or function() end
+
     --- handle the absolute directions
     if direction >= NORTH and direction <= WEST then
-        if direction == (data.orientation[DIRECTION] + RIGHT) % DIRECTIONS then
+        if direction == (data.orientation.direction + RIGHT) % DIRECTIONS then
             turtle.turnRight()
-        elseif direction == (data.orientation[DIRECTION] + LEFT) % DIRECTIONS then
+        elseif direction == (data.orientation.direction + LEFT) % DIRECTIONS then
             turtle.turnLeft()
-        elseif direction ~= data.orientation[DIRECTION] then
+        elseif direction ~= data.orientation.direction then
             turtle.turnRight()
             turtle.turnRight()
         end
-        data.orientation[DIRECTION] = direction
+        data.orientation.direction = direction
     --- handle the relative directions
     elseif direction == RIGHT or direction == LEFT then
         if direction == RIGHT then
@@ -54,71 +85,72 @@ function turn( direction )
         else
             turtle.turnLeft()
         end
-        data.orientation[DIRECTION] = (data.orientation[DIRECTION] + direction) % DIRECTIONS
+        data.orientation.direction = (data.orientation.direction + direction) % DIRECTIONS
+        saveCallBack()
     end
 end
 
 --- moves the turtle in a given direction, returns false on collision or running out of fuel
-function move( direction, distance, collisionCallBack, fuelCallBack )
-    if direction >= NORTH and direction <= WEST or direction == RIGHT or direction == LEFT then
-        turn(direction)
-        moveLoop(FORWARD, distance, turtle.forward, collisionCallBack, fuelCallBack)
-    elseif direction == UP then
-        moveLoop(UP, distance, turtle.up, collisionCallBack, fuelCallBack)
-    elseif direction == DOWN then
-        moveLoop(DOWN, distance, turtle.down, collisionCallBack, fuelCallBack)
-    elseif direction == BACK then
-        moveLoop(BACK, distance, turtle.back, collisionCallBack, fuelCallBack)
-    end
-end
+function move( direction, distance, saveCallBack, collisionCallBack, fuelCallBack )
+    saveCallBack = saveCallBack or function() end
+    collisionCallBack = collisionCallBack or function(direction) end
+    fuelCallBack = fuelCallBack or function() end
 
---- handles the movement logic for moving in a single direction
-function moveLoop(direction, distance, moveCallBack, collisionCallBack, fuelCallBack)
-    i = distance
-    while i > 0 do
-        if moveCallBack() then
-            updatePosition(direction)
-        else
-            if requiresFuel() then
-                if not refuel() then
-                    fuelCallBack()
-                    return false
-                end
-            else
-                collisionCallBack()
-                return false
-            end
-        end
-        i = i - 1
+    if direction >= NORTH and direction <= WEST or direction == RIGHT or direction == LEFT or direction == FORWARD then
+        turn(direction, saveCallBack)
+        return moveLoop(FORWARD, distance, turtle.forward, saveCallBack, collisionCallBack, fuelCallBack)
+    elseif direction == UP then
+        return moveLoop(UP, distance, turtle.up, saveCallBack, collisionCallBack, fuelCallBack)
+    elseif direction == DOWN then
+        return moveLoop(DOWN, distance, turtle.down, saveCallBack, collisionCallBack, fuelCallBack)
+    elseif direction == BACK then
+        return moveLoop(BACK, distance, turtle.back, saveCallBack, collisionCallBack, fuelCallBack)
     end
     return true
 end
 
---- updates the position by 1 for a given direction
-function updatePosition( direction )
-    --- handles the base case, absolute directions
-    if direction == UP then
-        data.orientation[Y] = data.orientation[Y] + 1
-    elseif direction == DOWN then
-        data.orientation[Y] = data.orientation[Y] - 1
+--- moves to a give coordinate in the axis order specified by the 'order' table
+--- order = {Y, X, Z} where X, Y, and Z are the orientation constants
+--- returns false if unable to move
+function moveTo( x, y, z, order, saveCallBack, collisionCallBack, fuelCallBack )
+    saveCallBack = saveCallBack or function() end
+    collisionCallBack = collisionCallBack or function(direction) end
+    fuelCallBack = fuelCallBack or function() end
 
-    elseif direction == NORTH then
-        data.orientation[Z] = data.orientation[Z] - 1
-    elseif direction == SOUTH then
-        data.orientation[Z] = data.orientation[Z] + 1
+    --- calculate the differentials
+    dx = x - data.orientation.x
+    dy = y - data.orientation.y
+    dz = z - data.orientation.z
 
-    elseif direction == EAST then
-        data.orientation[X] = data.orientation[X] + 1
-    elseif direction == WEST then
-        data.orientation[X] = data.orientation[X] - 1
+    --- move the turtle in the ordering given by the order table
+    for i, axis in ipairs(order) do
+        if axis == X then
+            if not moveOrdering(dx, EAST, WEST, saveCallBack, collisionCallBack, fuelCallBack ) then
+                return false
+            end
+        end
+        if axis == Y then
+            if not moveOrdering(dy, UP, DOWN, saveCallBack, collisionCallBack, fuelCallBack ) then
+                return false
+            end
+        end
+        if axis == Z then
+            if not moveOrdering(dz, SOUTH, NORTH, saveCallBack, collisionCallBack, fuelCallBack ) then
+                return false
+            end
+        end
     end
+    return true
+end
 
-    --- handles the relative directions
-    if direction == FORWARD then
-        updatePosition(data.orientation[DIRECTION])
-    elseif direction == BACK then
-        updatePosition((data.orientation[DIRECTION] + 2) % DIRECTIONS)
+--- handles which direction to go based on the differential
+function moveOrdering( dl, positiveDirect, negativeDirection, saveCallBack, collisionCallBack, fuelCallBack)
+    if dl > 0 then
+        return move(positiveDirect, dl, saveCallBack, collisionCallBack, fuelCallBack )
+    elseif dl < 0 then
+        return move(negativeDirection, math.abs(dl), saveCallBack, collisionCallBack, fuelCallBack )
     end
+    return true
 end
 
 --- checks if fuel is required
@@ -133,4 +165,107 @@ function refuel()
     refueled = turtle.refuel( data.refuelAmount )
     turtle.select( slot )
     return refueled
+end
+
+--- saves the movement data to a given file location
+function saveData( file )
+    fileHandle = fs.open(file, "w")
+    text = textutils.serialize( data )
+    fileHandle.write(text)
+    fileHandle.close()
+end
+
+--- loads movement data from a given file location
+function loadData ( file )
+    fileHandle = fs.open(file, "r")
+    text = fileHandle.readAll()
+    data = textutils.unserialize( text )
+    fileHandle.close()
+end
+
+--- attempts to locate the turtle's position and direction using two gps calls
+--- the turtle attempts to move forward after the first gps call to calculate the direction
+function locate( timeout, saveCallBack, collisionCallBack, fuelCallBack )
+    saveCallBack = saveCallBack or function() end
+    collisionCallBack = collisionCallBack or function(direction) end
+    fuelCallBack = fuelCallBack or function() end
+
+    x1, y1, z1 = gps.locate(timeout)
+
+    if not move(FORWARD, 1, saveCallBack, collisionCallBack, fuelCallBack ) then
+        return false
+    end
+
+    x2, y2, z2 = gps.locate(timeout)
+
+    dx = x2 - x1
+    dz = z2 - z1
+
+    data.orientation.x = x2
+    data.orientation.y = y2
+    data.orientation.z = z2
+
+    if dx > 0 then
+        data.orientation.direction = EAST
+    elseif dx < 0 then
+        data.orientation.direction = WEST
+    elseif dz > 0 then
+        data.orientation.direction = SOUTH
+    elseif dz < 0 then
+        data.orientation.direction = NORTH
+    end
+
+    saveCallBack()
+    return x1 ~= nil and x2 ~= nil
+end
+
+--- handles the movement logic for moving in a single direction
+--- saveCallBack is run after each movement is made
+function moveLoop(direction, distance, moveCallBack, saveCallBack, collisionCallBack, fuelCallBack)
+    i = distance
+    while i > 0 do
+        if moveCallBack() then
+            updatePosition(direction)
+            saveCallBack()
+        else
+            if requiresFuel() then
+                if not refuel() then
+                    fuelCallBack()
+                    return false
+                end
+            else
+                collisionCallBack( direction )
+                return false
+            end
+        end
+        i = i - 1
+    end
+    return true
+end
+
+--- updates the position by 1 for a given direction
+function updatePosition( direction )
+    --- handles the base case, absolute directions
+    if direction == UP then
+        data.orientation.y = data.orientation.y + 1
+    elseif direction == DOWN then
+        data.orientation.y = data.orientation.y - 1
+
+    elseif direction == NORTH then
+        data.orientation.z = data.orientation.z - 1
+    elseif direction == SOUTH then
+        data.orientation.z = data.orientation.z + 1
+
+    elseif direction == EAST then
+        data.orientation.x = data.orientation.x + 1
+    elseif direction == WEST then
+        data.orientation.x = data.orientation.x - 1
+    end
+
+    --- handles the relative directions
+    if direction == FORWARD then
+        updatePosition(data.orientation.direction)
+    elseif direction == BACK then
+        updatePosition((data.orientation.direction + 2) % DIRECTIONS)
+    end
 end
