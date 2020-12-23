@@ -37,6 +37,15 @@ local data = {
     refuelAmount = 1,
 }
 
+local yieldTime = os.clock()
+local function yield()
+    if os.clock() - yieldTime > 2 then
+        os.queueEvent("yieldEvent")
+        os.pullEvent("yieldEvent")
+        yieldTime = os.clock()
+    end
+end
+
 --- allow somewhat controlled access to the movement data
 function getOrientation()
     return data.orientation
@@ -61,6 +70,214 @@ end
 function setRefuelAmount( amount )
     data.refuelAmount = amount
 end
+
+Node = {
+    x = 0,
+    y = 0,
+    z = 0,
+    g = 0,
+    h = 0,
+    f = 0,
+    walkable = true,
+    parent = nil,
+}
+
+function Node:new(o)
+    o = o or {}
+    setmetatable(o, self)
+    self.__index = self
+    return o
+end
+
+function Node:key()
+    return self:generateKey( self.x, self.y, self.z )
+end
+
+function Node:generateKey(x, y, z)
+    return x .. ":" .. y .. ":" .. z
+end
+
+function Node:reset( maxCost )
+    self.g = maxCost
+    self.f = maxCost
+end
+
+function Node:calculateH( target )
+    self.h = math.abs(target.x - self.x) + math.abs(target.y - self.y) + math.abs(target.z - self.z)
+end
+
+function Node:calculateF()
+    self.f = self.g + self.h
+end
+
+function Node:calculateG( parent )
+    self.g = parent.g + 1
+    self.parent = parent
+end
+
+function Node:lessThan( node )
+    return self.f < node.f
+end
+
+--- adaptive move function
+--- uses A* to path find around obstacles
+function pathTo( x, y, z, maxCost, unreachableCallBack, collisionCallBack, saveCallBack, fuelCallBack )
+    unreachableCallBack = unreachableCallBack or function() end
+    saveCallBack = saveCallBack or function() end
+    fuelCallBack = fuelCallBack or function() end
+
+    nodes = {}
+    searching = true
+    order = {X,Y,Z}
+
+    function collision(direction)
+        if direction == UP then
+            if turtle.detectUp() then
+                nodes[Node:generateKey(data.orientation.x,data.orientation.y + 1,data.orientation.z)].walkable = false
+            end
+        elseif direction == DOWN then
+            if turtle.detectDown() then
+                nodes[Node:generateKey(data.orientation.x,data.orientation.y - 1,data.orientation.z)].walkable = false
+            end
+
+        elseif turtle.detect() then
+            if data.orientation.direction == NORTH then
+                nodes[Node:generateKey(data.orientation.x,data.orientation.y,data.orientation.z - 1)].walkable = false
+            elseif data.orientation.direction == SOUTH then
+                nodes[Node:generateKey(data.orientation.x,data.orientation.y,data.orientation.z + 1)].walkable = false
+
+            elseif data.orientation.direction == EAST then
+                nodes[Node:generateKey(data.orientation.x + 1,data.orientation.y,data.orientation.z)].walkable = false
+            elseif data.orientation.direction == WEST then
+                nodes[Node:generateKey(data.orientation.x - 1,data.orientation.y,data.orientation.z)].walkable = false
+            end
+        end
+        collisionCallBack(direction)
+    end
+
+    while searching do
+        target = findPath( x, y, z, nodes, maxCost )
+
+        if target == nil then
+            unreachableCallBack()
+            return false
+        end
+
+        stack = {}
+        while target ~= nil do
+            table.insert(stack, 1, target )
+            target = target.parent
+        end
+
+        reached = false
+        for i, node in ipairs(stack) do
+            reached = moveTo(node.x, node.y, node.z, order, saveCallBack, collision, fuelCallBack )
+            if not reached then
+                newNodes = {}
+                for key, node in pairs(nodes) do
+                    if not node.walkable then
+                        newNodes[key] = node
+                    end
+                end
+                nodes = newNodes
+                break
+            end
+        end
+
+        if reached then
+            searching = false
+        end
+    end
+    return true
+end
+
+function findPath(x, y, z, nodes, maxCost, yieldCount )
+    minCost = 0
+    target = Node:new({x = x, y = y, z = z} )
+    start = Node:new({x = data.orientation.x, y = data.orientation.y, z = data.orientation.z} )
+    stop = nil
+
+    open = {}
+    closed = {}
+
+    for key, node in pairs(nodes) do
+        node:reset( maxCost )
+        open[key] = node
+    end
+
+    open[start:key()] = start
+
+    while minCost < maxCost do
+        yield()
+        current = nil
+        for key, node in pairs(open) do
+            current = node
+            break
+        end
+        --- select the node of least cost
+        for key, node in pairs(open) do
+            yield()
+            if node:lessThan(current) then
+                current = node
+            end
+        end
+
+        closed[current:key()] = current
+        open[current:key()] = nil
+
+        minCost = current.f
+
+        --- if we cannot reach the target because it's blocked, exit
+        if open[target:key()] ~= nil and not open[target:key()].walkable or closed[target:key()] ~= nil and not closed[target:key()].walkable then
+            return nil
+        end
+
+        --- if we have found the target, return the stopping node
+        if current.x == x and current.y == y and current.z == z then
+            stop = current
+            break
+        end
+
+        --- calculate neighboring blocks
+        neighbours = {}
+        for i = -1, 1, 2 do
+            node1 = Node:new( {x = current.x + i, y = current.y, z = current.z } )
+            node2 = Node:new( {x = current.x, y = current.y + i, z = current.z } )
+            node3 = Node:new( {x = current.x, y = current.y, z = current.z + i } )
+            neighbours[node1:key()] = node1
+            neighbours[node2:key()] = node2
+            neighbours[node3:key()] = node3
+        end
+
+        --- calculate cost of neighbors
+        for key, node in pairs(neighbours) do
+            node:reset(maxCost)
+            if (open[key] == nil or open[key].walkable) and closed[key] == nil then
+                if open[key] == nil then
+                    open[key] = node
+                    open[key]:calculateH(target)
+                end
+                if current:lessThan(open[key]) then
+                    open[key]:calculateG(current)
+                    open[key]:calculateF()
+                    open[key].parent = current
+                end
+            end
+        end
+    end
+
+    --- populate the nodes table with the discovered blocks
+    for key, node in pairs(open) do
+        yield()
+        nodes[key] = node
+    end
+    for key, node in pairs(closed) do
+        yield()
+        nodes[key] = node
+    end
+    return stop
+end
+
 
 --- turns the turtle to a given relative or absolute direction
 --- saveCallBack is called after finishing a full turn
@@ -185,18 +402,28 @@ end
 
 --- attempts to locate the turtle's position and direction using two gps calls
 --- the turtle attempts to move forward after the first gps call to calculate the direction
-function locate( timeout, saveCallBack, collisionCallBack, fuelCallBack )
+function locate( timeout, gpsCallBack, saveCallBack, collisionCallBack, fuelCallBack )
+    gpsCallBack = gpsCallBack or function() end
     saveCallBack = saveCallBack or function() end
     collisionCallBack = collisionCallBack or function(direction) end
     fuelCallBack = fuelCallBack or function() end
 
     x1, y1, z1 = gps.locate(timeout)
+    if x1 == nil then
+        gpsCallBack()
+        return false
+    end
 
     if not move(FORWARD, 1, saveCallBack, collisionCallBack, fuelCallBack ) then
         return false
     end
 
     x2, y2, z2 = gps.locate(timeout)
+
+    if x2 == nil then
+        gpsCallBack()
+        return false
+    end
 
     dx = x2 - x1
     dz = z2 - z1
@@ -216,7 +443,7 @@ function locate( timeout, saveCallBack, collisionCallBack, fuelCallBack )
     end
 
     saveCallBack()
-    return x1 ~= nil and x2 ~= nil
+    return true
 end
 
 --- handles the movement logic for moving in a single direction
